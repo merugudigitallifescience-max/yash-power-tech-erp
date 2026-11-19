@@ -1,7 +1,7 @@
 from datetime import date, datetime, timezone
 
 from sqlalchemy import (
-    BigInteger, Boolean, Column, Date, DateTime, ForeignKey, Index, Integer,
+    BigInteger, Boolean, Column, Date, DateTime, ForeignKey, Index, Integer, LargeBinary,
     String, Table, Text, UniqueConstraint, JSON,
 )
 from sqlalchemy.orm import Mapped, mapped_column, relationship
@@ -161,6 +161,14 @@ class Document(TimestampMixin, Base):
     employee_id: Mapped[int | None] = mapped_column(ForeignKey("employees.id", ondelete="SET NULL"), index=True)
     uploaded_by_id: Mapped[int] = mapped_column(ForeignKey("users.id"), nullable=False)
     uploaded_by: Mapped[User] = relationship(lazy="joined")
+
+
+class DocumentBlob(Base):
+    """File bytes kept in Postgres (STORAGE=db) for hosts without a persistent disk."""
+    __tablename__ = "document_blobs"
+    id: Mapped[int] = mapped_column(primary_key=True)
+    document_id: Mapped[int] = mapped_column(ForeignKey("documents.id", ondelete="CASCADE"), unique=True, nullable=False)
+    data: Mapped[bytes] = mapped_column(LargeBinary, nullable=False)
 
 
 class AuditLog(Base):

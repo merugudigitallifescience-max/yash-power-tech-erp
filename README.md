@@ -29,6 +29,21 @@ Open http://localhost:3000. API docs: http://localhost:8000/api/docs
 First login: `admin@yashpowertech.local` / `Admin@12345` (change it under **My profile**).
 Override with `ADMIN_EMAIL` / `ADMIN_PASSWORD` / `JWT_SECRET` / `POSTGRES_PASSWORD` in a `.env` file next to `docker-compose.yml` before first start.
 
+## Deploy to Render (public website)
+
+The root `Dockerfile` builds one service: the web app is exported as static files and served by
+FastAPI, so the site and the API share one address. `render.yaml` adds a Postgres database.
+Uploaded files are stored in Postgres (`STORAGE=db`) because Render web services have no persistent disk.
+
+1. Push this repo to GitHub.
+2. In Render: **New → Blueprint**, connect GitHub, pick this repo.
+3. Enter `ADMIN_EMAIL` and `ADMIN_PASSWORD` when asked (this becomes the first login), then **Apply**.
+4. The first build takes about 5–10 minutes. The site is at `https://yash-power-tech-erp.onrender.com` (or whatever Render shows).
+
+Free plan limits: the service sleeps after 15 minutes idle (the first visit then takes about 1 minute), and the
+free database **expires after 30 days**. For a permanent site, upgrade the web service to Starter and the
+database to Basic in the Render dashboard (about $13/month total). Every `git push` to `main` redeploys.
+
 ## Tests
 
 ```powershell

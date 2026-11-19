@@ -6,13 +6,15 @@ from datetime import date, datetime, timedelta, timezone
 from pathlib import Path
 
 from fastapi import APIRouter, Depends, File, Form, HTTPException, Query, Request, UploadFile
-from fastapi.responses import FileResponse
+from urllib.parse import quote
+
+from fastapi.responses import FileResponse, Response
 from sqlalchemy import func, or_, select
 from sqlalchemy.orm import Session
 
 from ..config import settings
 from ..db import get_db
-from ..models import Attendance, AuditLog, Document, Employee, LeaveRequest, Task, User
+from ..models import Attendance, AuditLog, Document, DocumentBlob, Employee, LeaveRequest, Task, User
 from ..schemas import AuditOut, DocumentOut, DocumentPatch, Page, TaskIn, TaskOut, TaskPatch
 from ..security import audit, get_current_user, has, require
 
@@ -166,22 +168,32 @@ async def upload_document(request: Request, file: UploadFile = File(...), title:
         raise HTTPException(422, "Unknown category")
     if employee_id and not db.get(Employee, employee_id):
         raise HTTPException(422, "Employee does not exist")
-    key = f"{uuid.uuid4().hex}{ext}"
-    dest = _store_dir() / key
+    in_db = settings.storage == "db"
+    key = f"{'db:' if in_db else ''}{uuid.uuid4().hex}{ext}"
+    dest = None if in_db else _store_dir() / key
     limit = settings.max_upload_mb * 1024 * 1024
-    h, size = hashlib.sha256(), 0
-    with dest.open("wb") as out:
+    h, size, buf = hashlib.sha256(), 0, bytearray()
+    out = dest.open("wb") if dest else None
+    try:
         while chunk := await file.read(1024 * 1024):
             size += len(chunk)
             if size > limit:
-                out.close()
-                dest.unlink(missing_ok=True)
                 raise HTTPException(413, f"File exceeds {settings.max_upload_mb} MB")
             h.update(chunk)
-            out.write(chunk)
-    if size == 0:
-        dest.unlink(missing_ok=True)
-        raise HTTPException(422, "File is empty")
+            if out:
+                out.write(chunk)
+            else:
+                buf.extend(chunk)
+        if size == 0:
+            raise HTTPException(422, "File is empty")
+    except HTTPException:
+        if out:
+            out.close()
+            dest.unlink(missing_ok=True)
+        raise
+    finally:
+        if out and not out.closed:
+            out.close()
     digest = h.hexdigest()
     ctype = file.content_type or mimetypes.guess_type(name)[0] or "application/octet-stream"
     d = Document(title=title.strip() or Path(name).stem, original_filename=name, storage_key=key, content_type=ctype,
@@ -190,6 +202,8 @@ async def upload_document(request: Request, file: UploadFile = File(...), title:
                  employee_id=employee_id, uploaded_by_id=user.id)
     db.add(d)
     db.flush()
+    if in_db:
+        db.add(DocumentBlob(document_id=d.id, data=bytes(buf)))
     audit(db, user, "upload", "document", d.id, f"Uploaded {name} ({size} bytes)", request)
     db.commit()
     db.refresh(d)
@@ -208,13 +222,22 @@ def download(doc_id: int, request: Request, inline: bool = False, user: User = D
     d = db.get(Document, doc_id) or _404("Document")
     if d.category in ("hr", "employee") and not has(user, "employees:view") and d.uploaded_by_id != user.id:
         raise HTTPException(403, "Restricted HR document")
+    disposition = "inline" if inline else "attachment"
+    if d.storage_key.startswith("db:"):
+        blob = db.scalar(select(DocumentBlob).where(DocumentBlob.document_id == d.id))
+        if blob is None:
+            raise HTTPException(410, "File is missing from storage")
+        audit(db, user, "download", "document", d.id, d.original_filename, request)
+        db.commit()
+        return Response(blob.data, media_type=d.content_type, headers={
+            "Content-Disposition": f"{disposition}; filename*=UTF-8''{quote(d.original_filename)}"})
     path = _store_dir() / d.storage_key
     if not path.exists():
         raise HTTPException(410, "File is missing from storage")
     audit(db, user, "download", "document", d.id, d.original_filename, request)
     db.commit()
     return FileResponse(path, media_type=d.content_type, filename=d.original_filename,
-                        content_disposition_type="inline" if inline else "attachment")
+                        content_disposition_type=disposition)
 
 
 @router.patch("/documents/{doc_id}", response_model=DocumentOut)
@@ -236,7 +259,8 @@ def update_document(doc_id: int, body: DocumentPatch, request: Request, user: Us
 def delete_document(doc_id: int, request: Request, user: User = Depends(require("documents:delete")),
                     db: Session = Depends(get_db)):
     d = db.get(Document, doc_id) or _404("Document")
-    (_store_dir() / d.storage_key).unlink(missing_ok=True)
+    if not d.storage_key.startswith("db:"):
+        (_store_dir() / d.storage_key).unlink(missing_ok=True)
     db.delete(d)
     audit(db, user, "delete", "document", doc_id, f"Deleted {d.original_filename}", request)
     db.commit()
