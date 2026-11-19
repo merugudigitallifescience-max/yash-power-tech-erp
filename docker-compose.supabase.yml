@@ -1,0 +1,9 @@
+# Run the API against Supabase instead of the local Postgres container:
+#   docker compose -f docker-compose.yml -f docker-compose.supabase.yml up -d --build api
+# Needs SUPABASE_DB_URL (Supabase "Session pooler" URI) in .env — see .env.example.
+services:
+  api:
+    depends_on: !reset []
+    environment:
+      DATABASE_URL: ${SUPABASE_DB_URL:?Set SUPABASE_DB_URL in .env to your Supabase Session pooler URI}
+      STORAGE: db   # keep uploaded files in Supabase Postgres so nothing lives only on this PC
