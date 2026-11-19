@@ -1,4 +1,6 @@
-from pydantic import field_validator
+from urllib.parse import quote
+
+from pydantic import field_validator, model_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 
@@ -17,6 +19,17 @@ class Settings(BaseSettings):
             if v.startswith(prefix):
                 return "postgresql+psycopg://" + v[len(prefix):]
         return v
+
+    db_password: str | None = None  # optional: raw password inserted into a password-less DATABASE_URL
+
+    @model_validator(mode="after")
+    def insert_password(self):
+        if self.db_password:
+            scheme, rest = self.database_url.split("://", 1)
+            userinfo, hostpart = rest.split("@", 1)
+            user = userinfo.split(":", 1)[0]
+            self.database_url = f"{scheme}://{user}:{quote(self.db_password, safe='')}@{hostpart}"
+        return self
     jwt_secret: str = "change-me-in-production-please-use-a-long-random-string"
     access_token_minutes: int = 15
     refresh_token_days: int = 14
